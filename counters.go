@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,14 @@ const (
 	Invalid Handle = Handle(-1)
 )
 
-type Val int64
+// counter flags
+const (
+	CntMinF = 1 << iota
+	CntMaxF
+	CntHideVal
+)
+
+type Val uint64
 
 // callback function for transforming a value, when reading
 type CbkF func(h Handle, v Val, p interface{}) Val
@@ -31,8 +39,20 @@ type Def struct {
 	Desc  string
 }
 
+type cntvar struct {
+	v uint64
+}
+
+// String() implements the expvar Var interface
+func (cv *cntvar) String() string {
+	v := atomic.LoadUint64(&cv.v)
+	return strconv.FormatUint(v, 10)
+}
+
 type cnt struct {
-	v     expvar.Int
+	v     cntvar
+	min   cntvar
+	max   cntvar
 	flags int
 	cbk   CbkF
 	cbp   interface{}
@@ -113,6 +133,10 @@ func (g *Group) RegisterDef(d *Def) (Handle, bool) {
 	g.counters[i].flags = d.Flags
 	g.counters[i].desc = d.Desc
 	g.counters[i].name = d.Name
+	if d.Flags&CntMinF != 0 {
+		// min needs to be set to some high value
+		g.Reset(Handle(i), 0)
+	}
 	expvar.Publish(name, &g.counters[i].v)
 	if d.H != nil {
 		*d.H = Handle(i)
@@ -141,32 +165,131 @@ func (g *Group) CntNo() int {
 	return int(g.no)
 }
 
-func (g *Group) Add(h Handle, v Val) {
-	g.counters[h].v.Add(int64(v))
+//Add() returns the new counter value.
+func (g *Group) Add(h Handle, v Val) Val {
+	n := atomic.AddUint64(&g.counters[h].v.v, uint64(v))
+	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
+		if g.counters[h].flags&CntMaxF != 0 {
+			atomicUint64Max(&g.counters[h].max.v, n)
+		}
+		if g.counters[h].flags&CntMinF != 0 {
+			atomicUint64Min(&g.counters[h].min.v, n)
+		}
+	}
+	return Val(n)
 }
 
-func (g *Group) Sub(h Handle, v Val) {
-	g.counters[h].v.Add(-int64(v))
+func (g *Group) Sub(h Handle, v Val) Val {
+	return g.Add(h, Val(^uint64(v)+1))
+	//	n := atomic.AddUint64(&g.counters[h].v.v, ^uint64(v)+1)
+	//	return Val(n)
 }
 
-func (g *Group) Set(h Handle, v Val) {
-	g.counters[h].v.Set(int64(v))
+func (g *Group) Set(h Handle, v Val) Val {
+	atomic.StoreUint64(&g.counters[h].v.v, uint64(v))
+	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
+		if g.counters[h].flags&CntMaxF != 0 {
+			atomicUint64Max(&g.counters[h].max.v, uint64(v))
+		}
+		if g.counters[h].flags&CntMinF != 0 {
+			atomicUint64Min(&g.counters[h].min.v, uint64(v))
+		}
+	}
+	return v
 }
 
-func (g *Group) Inc(h Handle) {
-	g.counters[h].v.Add(1)
+// Reset() is similar to Set, but it re-initializes Min & Max
+func (g *Group) Reset(h Handle, v Val) Val {
+	atomic.StoreUint64(&g.counters[h].v.v, uint64(v))
+	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
+		if g.counters[h].flags&CntMaxF != 0 {
+			g.SetMax(h, v)
+		}
+		if g.counters[h].flags&CntMinF != 0 {
+			g.SetMin(h, Val(^uint64(0)))
+		}
+	}
+	return v
 }
 
-func (g *Group) Dec(h Handle) {
-	g.counters[h].v.Add(-1)
+func (g *Group) SetMax(h Handle, v Val) {
+	atomic.StoreUint64(&g.counters[h].max.v, uint64(v))
+}
+
+func (g *Group) SetMin(h Handle, v Val) {
+	atomic.StoreUint64(&g.counters[h].min.v, uint64(v))
+}
+
+func atomicUint64Max(dst *uint64, val uint64) uint64 {
+	var crt uint64
+	for {
+		crt = atomic.LoadUint64(dst)
+		if val <= crt {
+			return crt
+		}
+		if atomic.CompareAndSwapUint64(dst, crt, val) {
+			return val
+		}
+	}
+}
+
+func atomicUint64Min(dst *uint64, val uint64) uint64 {
+	var crt uint64
+	for {
+		crt = atomic.LoadUint64(dst)
+		if val >= crt {
+			return crt
+		}
+		if atomic.CompareAndSwapUint64(dst, crt, val) {
+			return val
+		}
+	}
+}
+
+// Max sets handle to v is v > crt val and returns the new maximum
+func (g *Group) Max(h Handle, v Val) Val {
+	return Val(atomicUint64Max(&g.counters[h].v.v, uint64(v)))
+}
+
+// Min sets handle to v is v < crt val and returns the new minimum
+func (g *Group) Min(h Handle, v Val) Val {
+	return Val(atomicUint64Min(&g.counters[h].v.v, uint64(v)))
+}
+
+func (g *Group) Inc(h Handle) Val {
+	return g.Add(h, 1)
+}
+
+func (g *Group) Dec(h Handle) Val {
+	return g.Sub(h, 1)
 }
 
 func (g *Group) Get(h Handle) Val {
-	v := Val(g.counters[h].v.Value())
+	v := atomic.LoadUint64(&g.counters[h].v.v)
 	if g.counters[h].cbk != nil {
-		return g.counters[h].cbk(h, v, g.counters[h].cbp)
+		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
 	}
-	return v
+	return Val(v)
+}
+
+func (g *Group) GetMax(h Handle) Val {
+	v := atomic.LoadUint64(&g.counters[h].max.v)
+	if g.counters[h].cbk != nil {
+		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
+	}
+	return Val(v)
+}
+
+func (g *Group) GetMin(h Handle) Val {
+	v := atomic.LoadUint64(&g.counters[h].max.v)
+	if g.counters[h].cbk != nil {
+		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
+	}
+	return Val(v)
+}
+
+func (g *Group) GetFlags(h Handle) int {
+	return g.counters[h].flags
 }
 
 func (g *Group) GetName(h Handle) string {
@@ -220,7 +343,8 @@ func (g *Group) CopyCnts(src *Group) {
 	g.subg = nil
 }
 
-func (g *Group) RateGrpCnts(src *Group, units int64) {
+// AvgGrp fills group with the average value : (g-src) / units
+func (g *Group) AvgGrp(src *Group, units int64) {
 	if src.no < g.no {
 		g.no = src.no
 	}
@@ -229,6 +353,12 @@ func (g *Group) RateGrpCnts(src *Group, units int64) {
 	}
 	for i := 0; i < int(g.no); i++ {
 		g.Sub(Handle(i), Val(int64(src.Get(Handle(i)))/units))
+		if g.GetFlags(Handle(i))&CntMaxF != 0 {
+			atomicUint64Max(&g.counters[i].max.v, uint64(src.GetMax(Handle(i))))
+		}
+		if g.GetFlags(Handle(i))&CntMinF != 0 {
+			atomicUint64Min(&g.counters[i].max.v, uint64(src.GetMin(Handle(i))))
+		}
 	}
 }
 
@@ -240,9 +370,28 @@ func (g *Group) Print(w io.Writer, pre string, flags int) {
 	for i := 0; i < int(g.no); i++ {
 		n := g.GetName(Handle(i))
 		if len(n) > 0 {
-			fmt.Fprintf(w, "%s%-40s", pre, prefix+n)
+			fmt.Fprintf(w, "%s%-30s", pre, prefix+n)
 			if flags&PrVal != 0 {
-				fmt.Fprintf(w, ": %6d", g.Get(Handle(i)))
+				fmt.Fprintf(w, ": ")
+				if g.GetFlags(Handle(i))&CntHideVal == 0 {
+					fmt.Fprintf(w, "%6d", g.Get(Handle(i)))
+				} else {
+					fmt.Fprintf(w, "      ")
+				}
+				if g.GetFlags(Handle(i))&CntMinF != 0 {
+					m := g.GetMin(Handle(i))
+					if m == Val(^uint64(0)) {
+						m = 0
+					}
+					fmt.Fprintf(w, " m: %6d", m)
+				} else {
+					fmt.Fprintf(w, "       ")
+				}
+				if g.GetFlags(Handle(i))&CntMaxF != 0 {
+					fmt.Fprintf(w, " M: %6d", g.GetMax(Handle(i)))
+				} else {
+					fmt.Fprintf(w, "       ")
+				}
 			}
 			if flags&PrDesc != 0 {
 				fmt.Fprintf(w, "		%s", g.GetDesc(Handle(i)))
