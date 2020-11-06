@@ -4,6 +4,16 @@
 // that can be found in the LICENSE.txt file in the root of the source
 // tree.
 
+// Package counters provides easy to use atomic counters.
+// The counters are defined in groups and each groups can have subgroups
+// resulting in a tree like structure.
+//
+// Each counter has an associated handle (used in all the operations),
+// name and description.
+//
+// Supported operations are increment, decrement, min and max.
+//
+// Entire groups (complete with their subgroups subtree) can be printed.
 package counters
 
 import (
@@ -23,33 +33,52 @@ const (
 	Invalid Handle = Handle(-1)
 )
 
-// counter flags
+// Counter flags.
 const (
+	// Counter is storing Min values.
 	CntMinF = 1 << iota
+	// Counter is storing Max values.
 	CntMaxF
+	// The counter value should be hidden (not printed).
 	CntHideVal
 )
 
 type Val uint64
 
-// callback function for transforming a value, when reading
+// CbkF is the type for the callback function called to
+// transform a counter value, when reading it.
+//
+// The parameters are the counter handle, the value to be transformed
+// and an opaque parameter, set when the callback is registered.
+//
+// It returns the transformed value, which will be returned by the counter
+// read or get function.
 type CbkF func(h Handle, v Val, p interface{}) Val
 
-// Def is for registering a counter
+// Def is the structure for registering a counter.
 type Def struct {
-	H     *Handle // filled if not nil
+	// Counter handle poiner, filled with the allocated
+	// handle value if not nil.
+	H *Handle
+	// Counter flags, e.g. CntHideVal or CntMaxF.
 	Flags int
-	Cbk   CbkF
-	CbP   interface{} // callback param
-	Name  string
-	Desc  string
+	// Counter callback function, called on read to transform the
+	// value (see type CbkF).
+	Cbk CbkF
+	// Counter callback function opaque parameter.
+	// This parameter will be passed to the callback.
+	CbP interface{} // callback param
+	// Counter name.
+	Name string
+	// Counter description (short string describing what the counter will do)
+	Desc string
 }
 
 type cntvar struct {
 	v uint64
 }
 
-// String() implements the expvar Var interface
+// String implements the expvar Var interface.
 func (cv *cntvar) String() string {
 	v := atomic.LoadUint64(&cv.v)
 	return strconv.FormatUint(v, 10)
@@ -60,13 +89,19 @@ type cnt struct {
 	min   cntvar
 	max   cntvar
 	flags int
-	cbk   CbkF
-	cbp   interface{}
-	name  string
-	desc  string
+	// Counter callback function, called on read to transform the
+	// value (see type CbkF).
+	cbk CbkF
+	// Counter callback function opaque parameter.
+	// This parameter will be passed to the callback.
+	cbp  interface{}
+	name string
+	desc string
 }
 
+// Group is the type for the internal counter group representation.
 type Group struct {
+	// Group name.
 	Name     string
 	prefix   string
 	counters []cnt
@@ -77,26 +112,38 @@ type Group struct {
 	lock     sync.Mutex
 }
 
-// Print flags
+// Print flags used by the Group.Print function.
 const (
-	PrFullName = 1 << iota // full counter name, e.g.: group1.group2.counter
-	PrVal                  // print value (cnt: val)
-	PrDesc                 // print desc (cnt: [val] [desc])
-	PrRec                  // recursive, all subgroups
+	// Full counter name, e.g.: group1.group2.counter.
+	PrFullName = 1 << iota
+	// Print value (cnt: val).
+	PrVal
+	// Print counter description  (cnt: [val] [desc]).
+	PrDesc
+	// Print recursively all subgroups.
+	PrRec
 )
 
+// RootGrp contains all the groups defined without a parent group (nil).
 var RootGrp Group
 
 func init() {
 }
 
 // NewGroup creates a new counter group, with a specified name and parent.
-// The maximum counters number will be n (it cannot be increased afterwards)
+//
+// The maximum counters number will be n (it cannot be increased afterwards).
+// If the parent group is nil, the parent will be set to RootGrp.
+//
+// It returns a pointer to the newly created (and initialised) group.
 func NewGroup(Name string, parent *Group, n int) *Group {
 	g := &Group{}
 	return g.Init(Name, parent, n)
 }
 
+// Init initialises a new group.
+// It takes 3 parameters: the name of the group, the parent and the maximum
+// supported number of counters in this group (cannot be increased afterwards).
 func (g *Group) Init(Name string, parent *Group, n int) *Group {
 	g.Name = Name
 	g.counters = make([]cnt, n)
@@ -117,6 +164,7 @@ func (g *Group) Init(Name string, parent *Group, n int) *Group {
 	return g
 }
 
+// AddSubGroup adds a subgroup to the current group.
 func (g *Group) AddSubGroup(sg *Group) {
 	g.lock.Lock()
 	if g.subg == nil {
@@ -126,8 +174,10 @@ func (g *Group) AddSubGroup(sg *Group) {
 	g.lock.Unlock()
 }
 
-// RegisterDef returns new handle and true on success, or garbage and false
-// on error
+// RegisterDef adds a new counter to the group, based on a counter Def.
+//
+// It returns the new counter handle and true on success,
+// or garbage and false on error.
 func (g *Group) RegisterDef(d *Def) (Handle, bool) {
 	name := g.prefix + d.Name
 	i := int(atomic.AddInt32(&g.no, 1) - 1)
@@ -153,6 +203,11 @@ func (g *Group) RegisterDef(d *Def) (Handle, bool) {
 	return Handle(i), true
 }
 
+// RegisterDefs adds several counters to the group, based on an array of
+// counter Def.
+//
+// It returns true on success (all counter have been added successfully),
+// or false on error (at least one counter failed to be added).
 func (g *Group) RegisterDefs(defs []Def) bool {
 	for _, d := range defs {
 		if _, ok := g.RegisterDef(&d); !ok {
@@ -162,16 +217,22 @@ func (g *Group) RegisterDefs(defs []Def) bool {
 	return true
 }
 
+// Register adds a new standard counter based on name and description.
+//
+// It returns the new counter handle and true on success, or false on error.
 func (g *Group) Register(Name string, Desc string) (Handle, bool) {
 	d := Def{Name: Name, Desc: Desc}
 	return g.RegisterDef(&d)
 }
 
+// CntNo returns the number of counters registered.
 func (g *Group) CntNo() int {
 	return int(g.no)
 }
 
-//Add() returns the new counter value.
+// Add adds a value to a counter. The counter is specified by its handle.
+//
+// It returns the new counter value (after the addition).
 func (g *Group) Add(h Handle, v Val) Val {
 	n := atomic.AddUint64(&g.counters[h].v.v, uint64(v))
 	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
@@ -185,12 +246,19 @@ func (g *Group) Add(h Handle, v Val) Val {
 	return Val(n)
 }
 
+// Sub subtracts a value from a counter.
+// The counter is specified by its handle.
+//
+// It returns the new counter value (after the subtraction).
 func (g *Group) Sub(h Handle, v Val) Val {
 	return g.Add(h, Val(^uint64(v)+1))
 	//	n := atomic.AddUint64(&g.counters[h].v.v, ^uint64(v)+1)
 	//	return Val(n)
 }
 
+// Set sets a counter value. The counter is specified by its handle.
+//
+// It returns the new counter value.
 func (g *Group) Set(h Handle, v Val) Val {
 	atomic.StoreUint64(&g.counters[h].v.v, uint64(v))
 	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
@@ -204,7 +272,11 @@ func (g *Group) Set(h Handle, v Val) Val {
 	return v
 }
 
-// Reset() is similar to Set, but it re-initializes Min & Max
+// Reset sets a counter value. The counter is specified by its handle.
+// The difference from Set() is that it re-initializes the counter min and
+// max values.
+//
+// It returns the new counter value.
 func (g *Group) Reset(h Handle, v Val) Val {
 	atomic.StoreUint64(&g.counters[h].v.v, uint64(v))
 	if g.counters[h].flags&(CntMaxF|CntMinF) != 0 {
@@ -218,10 +290,14 @@ func (g *Group) Reset(h Handle, v Val) Val {
 	return v
 }
 
+// SetMax force-sets directly the counter internal maximum value.
+// The counter is specified by its handle.
 func (g *Group) SetMax(h Handle, v Val) {
 	atomic.StoreUint64(&g.counters[h].max.v, uint64(v))
 }
 
+// SetMin force-sets directly the counter internal minimum value.
+// The counter is specified by its handle.
 func (g *Group) SetMin(h Handle, v Val) {
 	atomic.StoreUint64(&g.counters[h].min.v, uint64(v))
 }
@@ -252,24 +328,43 @@ func atomicUint64Min(dst *uint64, val uint64) uint64 {
 	}
 }
 
-// Max sets handle to v is v > crt val and returns the new maximum
+// Max sets the counter maximum value if v > current value.
+// The counter is specified by its handle.
+//
+// It returns the new value.
 func (g *Group) Max(h Handle, v Val) Val {
 	return Val(atomicUint64Max(&g.counters[h].v.v, uint64(v)))
 }
 
-// Min sets handle to v is v < crt val and returns the new minimum
+// Min sets the counter minimum value if v < current value.
+// The counter is specified by its handle.
+//
+// It returns the new value.
 func (g *Group) Min(h Handle, v Val) Val {
 	return Val(atomicUint64Min(&g.counters[h].v.v, uint64(v)))
 }
 
+// Inc increments the counter current value by 1.
+// The counter is specified by its handle.
+//
+// It returns the new value.
 func (g *Group) Inc(h Handle) Val {
 	return g.Add(h, 1)
 }
 
+// Dec decrements the counter current value by 1.
+// The counter is specified by its handle.
+//
+// It returns the new value.
 func (g *Group) Dec(h Handle) Val {
 	return g.Sub(h, 1)
 }
 
+// Get returns the counter current value.
+// If the counter has a defined callback, the callback will be
+// called to transform the value.
+//
+// The counter is specified by its handle.
 func (g *Group) Get(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].v.v)
 	if g.counters[h].cbk != nil {
@@ -278,6 +373,11 @@ func (g *Group) Get(h Handle) Val {
 	return Val(v)
 }
 
+// GetMax returns the counter maximum value.
+// If the counter has a defined callback, the callback will be
+// called to transform the value.
+//
+// The counter is specified by its handle.
 func (g *Group) GetMax(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].max.v)
 	if g.counters[h].cbk != nil {
@@ -286,6 +386,11 @@ func (g *Group) GetMax(h Handle) Val {
 	return Val(v)
 }
 
+// GetMin returns the counter minimum value.
+// If the counter has a defined callback, the callback will be
+// called to transform the value.
+//
+// The counter is specified by its handle.
 func (g *Group) GetMin(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].max.v)
 	if g.counters[h].cbk != nil {
@@ -294,22 +399,29 @@ func (g *Group) GetMin(h Handle) Val {
 	return Val(v)
 }
 
+// GetFlags returns the flags with which a counter was registered.
 func (g *Group) GetFlags(h Handle) int {
 	return g.counters[h].flags
 }
 
+// GetFlags returns a counter name.
 func (g *Group) GetName(h Handle) string {
 	return g.counters[h].name
 }
 
+// GetFlags returns a counter full name, composed of the group prefix and
+// the counter name.
 func (g *Group) GetFullName(h Handle) string {
 	return g.prefix + g.counters[h].name
 }
 
+// GetDesc returns a counter description.
 func (g *Group) GetDesc(h Handle) string {
 	return g.counters[h].desc
 }
 
+// GetCounter returns a counter handle, given the counter name.
+// If the counter is not found, it will return false.
 func (g *Group) GetCounter(name string) (Handle, bool) {
 	g.lock.Lock()
 	h, ok := g.cnames[name]
@@ -317,6 +429,12 @@ func (g *Group) GetCounter(name string) (Handle, bool) {
 	return h, ok
 }
 
+// GetGroup returns a subgroup, based on a subgroup name.
+// If no subgroup with the corresponding name exists it will
+// return nil.
+//
+// GetGroup does not work recursively, it will search only at
+// the current level.
 func (g *Group) GetGroup(gname string) *Group {
 	g.lock.Lock()
 	subgr := g.subg[gname]
@@ -324,10 +442,12 @@ func (g *Group) GetGroup(gname string) *Group {
 	return subgr
 }
 
+// GetParent it will return the group parent or nil.
 func (g *Group) GetParent() *Group {
 	return g.parent
 }
 
+// GetSubGroupsNo will return the number of direct subgroups.
 func (g *Group) GetSubGroupsNo() int {
 	g.lock.Lock()
 	n := len(g.subg)
@@ -335,6 +455,8 @@ func (g *Group) GetSubGroupsNo() int {
 	return n
 }
 
+// GetSubGroups will fill a passed groups array with all the
+// direct subgroups.
 func (g *Group) GetSubGroups(groups *[]*Group) {
 	g.lock.Lock()
 	for _, v := range g.subg {
@@ -343,13 +465,18 @@ func (g *Group) GetSubGroups(groups *[]*Group) {
 	g.lock.Unlock()
 }
 
+// CopyCnts will copy all the counter from a src group into the current group.
+// Note that all the current group subgroups will be removed.
 func (g *Group) CopyCnts(src *Group) {
 	g.no = int32(copy(g.counters, src.counters[:src.no]))
 	g.cnames = src.cnames
 	g.subg = nil
 }
 
-// AvgGrp fills group with the average value : (g-src) / units
+// AvgGrp fills all the counters in the group with the average values of the
+// corresponding counters in src: (g-src) / units.
+//
+// Note: the groups must have the same counters.
 func (g *Group) AvgGrp(src *Group, units int64) {
 	if src.no < g.no {
 		g.no = src.no
@@ -358,6 +485,7 @@ func (g *Group) AvgGrp(src *Group, units int64) {
 		return
 	}
 	for i := 0; i < int(g.no); i++ {
+		// FIXME: src/units
 		g.Sub(Handle(i), Val(int64(src.Get(Handle(i)))/units))
 		if g.GetFlags(Handle(i))&CntMaxF != 0 {
 			atomicUint64Max(&g.counters[i].max.v, uint64(src.GetMax(Handle(i))))
@@ -368,6 +496,8 @@ func (g *Group) AvgGrp(src *Group, units int64) {
 	}
 }
 
+// Print prints all the group counters according to the passed flags
+// (PrVal, PrDesc, PrFullName).
 func (g *Group) Print(w io.Writer, pre string, flags int) {
 	prefix := ""
 	if flags&PrFullName != 0 {
@@ -407,6 +537,11 @@ func (g *Group) Print(w io.Writer, pre string, flags int) {
 	}
 }
 
+// PrintSubGroups prints all the subgroups according to the passed flags
+// (PrVal, PrDesc, PrFullName, PrRec).
+//
+// If the PrRec is set in the passed flags it will recursively print all
+// the subgroup tree.
 func (g *Group) PrintSubGroups(w io.Writer, flags int) {
 	n := g.GetSubGroupsNo()
 	pre := ""
