@@ -27,9 +27,11 @@ import (
 	"sync/atomic"
 )
 
+// Handle is the type for the counter handle.
 type Handle int
 
 const (
+	// Invalid marks an invalid handle (e.g. set on error).
 	Invalid Handle = Handle(-1)
 )
 
@@ -43,6 +45,7 @@ const (
 	CntHideVal
 )
 
+// Val is the type for the counter value.
 type Val uint64
 
 // CbkF is the type for the callback function called to
@@ -404,12 +407,12 @@ func (g *Group) GetFlags(h Handle) int {
 	return g.counters[h].flags
 }
 
-// GetFlags returns a counter name.
+// GetName returns a counter name, given the counter handle.
 func (g *Group) GetName(h Handle) string {
 	return g.counters[h].name
 }
 
-// GetFlags returns a counter full name, composed of the group prefix and
+// GetFullName returns a counter full name, composed of the group prefix and
 // the counter name.
 func (g *Group) GetFullName(h Handle) string {
 	return g.prefix + g.counters[h].name
@@ -473,6 +476,7 @@ func (g *Group) CopyCnts(src *Group) {
 	g.subg = nil
 }
 
+/*
 // AvgGrp fills all the counters in the group with the average values of the
 // corresponding counters in src: (g-src) / units.
 //
@@ -495,6 +499,7 @@ func (g *Group) AvgGrp(src *Group, units int64) {
 		}
 	}
 }
+*/
 
 // Print prints all the group counters according to the passed flags
 // (PrVal, PrDesc, PrFullName).
