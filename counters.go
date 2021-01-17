@@ -138,9 +138,22 @@ func init() {
 // The maximum counters number will be n (it cannot be increased afterwards).
 // If the parent group is nil, the parent will be set to RootGrp.
 //
+// If the group already exists in parent, the existing group will be returned.
+//
 // It returns a pointer to the newly created (and initialised) group.
 func NewGroup(Name string, parent *Group, n int) *Group {
-	g := &Group{}
+	if parent == nil {
+		parent = &RootGrp
+	}
+	g := parent.GetSubGroup(Name)
+	if g != nil {
+		if len(g.counters) >= n {
+			return g
+		}
+		// error, existing incompatible group
+		return nil
+	}
+	g = &Group{}
 	return g.Init(Name, parent, n)
 }
 
@@ -178,10 +191,25 @@ func (g *Group) AddSubGroup(sg *Group) {
 }
 
 // RegisterDef adds a new counter to the group, based on a counter Def.
-//
 // It returns the new counter handle and true on success,
 // or garbage and false on error.
+// If the counter was previously registered and it has the same def, the
+// old counter handle will be returned. If the definitions are different
+// it will return error.
 func (g *Group) RegisterDef(d *Def) (Handle, bool) {
+	h, ok := g.GetCounter(d.Name)
+	if ok {
+		// already registered
+		if !g.EqDef(h, d) {
+			// different defs => error
+			return h, false
+		}
+		if d.H != nil {
+			*d.H = h
+		}
+		return h, true
+	}
+
 	name := g.prefix + d.Name
 	i := int(atomic.AddInt32(&g.no, 1) - 1)
 	if i >= len(g.counters) {
@@ -204,6 +232,58 @@ func (g *Group) RegisterDef(d *Def) (Handle, bool) {
 	g.cnames[d.Name] = Handle(i)
 	g.lock.Unlock()
 	return Handle(i), true
+}
+
+// EqDef checks if counter handle was defined with the def d.
+func (g *Group) EqDef(h Handle, d *Def) bool {
+	return g.counters[h].cbp == d.CbP &&
+		g.counters[h].flags == d.Flags &&
+		g.counters[h].name == d.Name &&
+		g.counters[h].desc == d.Desc
+}
+
+// CheckDefs check if the counters in the group were defined with the defs
+// definitions.
+func (g *Group) CheckDefs(defs []Def) bool {
+	if g.CntNo() != len(defs) {
+		return false
+	}
+	for _, d := range defs {
+		h, ok := g.GetCounter(d.Name)
+		if !ok {
+			return false
+		}
+		if !g.EqDef(h, &d) {
+			return false
+		}
+	}
+	return true
+}
+
+// FillHandles fills the handles in a defs slice, if a counters with
+// the correponding name ( defs[].Name) exits in this group.
+// It returns the number of handles filled.
+// For counters that not exits in the group, the corresponding H value
+// in defs will be set to counters.Invalid.
+func (g *Group) FillHandles(defs []Def) int {
+	n := 0
+	for _, d := range defs {
+		h, ok := g.GetCounter(d.Name)
+		if !ok {
+			if d.H != nil {
+				*d.H = Invalid
+			}
+			continue
+		}
+		if !g.EqDef(h, &d) {
+			continue
+		}
+		if d.H != nil {
+			*d.H = h
+		}
+		n++
+	}
+	return n
 }
 
 // RegisterDefs adds several counters to the group, based on an array of
@@ -432,17 +512,23 @@ func (g *Group) GetCounter(name string) (Handle, bool) {
 	return h, ok
 }
 
-// GetGroup returns a subgroup, based on a subgroup name.
+// GetSubGroup returns a subgroup, based on a subgroup name.
 // If no subgroup with the corresponding name exists it will
 // return nil.
 //
-// GetGroup does not work recursively, it will search only at
+// GetSubGroup does not work recursively, it will search only at
 // the current level.
-func (g *Group) GetGroup(gname string) *Group {
+func (g *Group) GetSubGroup(gname string) *Group {
 	g.lock.Lock()
 	subgr := g.subg[gname]
 	g.lock.Unlock()
 	return subgr
+}
+
+// GetGroup is obsolete and will be removed in future versions,
+// use GetSubGroup instead.
+func (g *Group) GetGroup(gname string) *Group {
+	return g.GetSubGroup(gname)
 }
 
 // GetParent it will return the group parent or nil.
