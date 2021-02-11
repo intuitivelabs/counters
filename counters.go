@@ -475,7 +475,7 @@ func (g *Group) GetMax(h Handle) Val {
 //
 // The counter is specified by its handle.
 func (g *Group) GetMin(h Handle) Val {
-	v := atomic.LoadUint64(&g.counters[h].max.v)
+	v := atomic.LoadUint64(&g.counters[h].min.v)
 	if g.counters[h].cbk != nil {
 		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
 	}
