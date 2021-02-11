@@ -1,5 +1,7 @@
 # counters
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/intuitivelabs/counters.svg)](https://pkg.go.dev/github.com/intuitivelabs/counters)
+
 Package counters provides easy to use atomic counters.
 The counters are defined in groups and each groups can have subgroups
  resulting in a tree like structure.
