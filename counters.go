@@ -161,6 +161,7 @@ func NewGroup(Name string, parent *Group, n int) *Group {
 // It takes 3 parameters: the name of the group, the parent and the maximum
 // supported number of counters in this group (cannot be increased afterwards).
 func (g *Group) Init(Name string, parent *Group, n int) *Group {
+	g.no = 0
 	g.Name = Name
 	g.counters = make([]cnt, n)
 	g.subg = make(map[string]*Group, 8)
