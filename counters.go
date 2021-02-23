@@ -649,6 +649,47 @@ func (g *Group) AvgGrp(src *Group, units int64) {
 }
 */
 
+// PrintCounter prints one counter according to the passed flags.
+// It will print the contents of ident at the start and the
+// counter name will be prefixed by prefix. If prefix is empty and
+// PrFullName is set, the full counter name will be printed.
+func (g *Group) PrintCounter(w io.Writer, h Handle,
+	ident, prefix string, flags int) {
+	n := g.GetName(h)
+	if len(n) > 0 {
+		if flags&PrFullName != 0 && prefix == "" {
+			prefix = g.prefix
+		}
+		fmt.Fprintf(w, "%s%-30s", ident, prefix+n)
+		if flags&PrVal != 0 {
+			fmt.Fprintf(w, ": ")
+			if g.GetFlags(h)&CntHideVal == 0 {
+				fmt.Fprintf(w, "%6d", g.Get(h))
+			} else {
+				fmt.Fprintf(w, "      ")
+			}
+			if g.GetFlags(h)&CntMinF != 0 {
+				m := g.GetMin(h)
+				if m == Val(^uint64(0)) {
+					m = 0
+				}
+				fmt.Fprintf(w, " m: %6d", m)
+			} else {
+				fmt.Fprintf(w, "       ")
+			}
+			if g.GetFlags(h)&CntMaxF != 0 {
+				fmt.Fprintf(w, " M: %6d", g.GetMax(h))
+			} else {
+				fmt.Fprintf(w, "       ")
+			}
+		}
+		if flags&PrDesc != 0 {
+			fmt.Fprintf(w, "		%s", g.GetDesc(h))
+		}
+		fmt.Fprintln(w)
+	}
+}
+
 // Print prints all the group counters according to the passed flags
 // (PrVal, PrDesc, PrFullName).
 func (g *Group) Print(w io.Writer, pre string, flags int) {
@@ -657,36 +698,7 @@ func (g *Group) Print(w io.Writer, pre string, flags int) {
 		prefix = g.prefix
 	}
 	for i := 0; i < int(g.no); i++ {
-		n := g.GetName(Handle(i))
-		if len(n) > 0 {
-			fmt.Fprintf(w, "%s%-30s", pre, prefix+n)
-			if flags&PrVal != 0 {
-				fmt.Fprintf(w, ": ")
-				if g.GetFlags(Handle(i))&CntHideVal == 0 {
-					fmt.Fprintf(w, "%6d", g.Get(Handle(i)))
-				} else {
-					fmt.Fprintf(w, "      ")
-				}
-				if g.GetFlags(Handle(i))&CntMinF != 0 {
-					m := g.GetMin(Handle(i))
-					if m == Val(^uint64(0)) {
-						m = 0
-					}
-					fmt.Fprintf(w, " m: %6d", m)
-				} else {
-					fmt.Fprintf(w, "       ")
-				}
-				if g.GetFlags(Handle(i))&CntMaxF != 0 {
-					fmt.Fprintf(w, " M: %6d", g.GetMax(Handle(i)))
-				} else {
-					fmt.Fprintf(w, "       ")
-				}
-			}
-			if flags&PrDesc != 0 {
-				fmt.Fprintf(w, "		%s", g.GetDesc(Handle(i)))
-			}
-			fmt.Fprintln(w)
-		}
+		g.PrintCounter(w, Handle(i), pre, prefix, flags)
 	}
 }
 
