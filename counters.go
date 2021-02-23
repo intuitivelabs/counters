@@ -510,7 +510,39 @@ func (g *Group) GetCounter(name string) (Handle, bool) {
 	g.lock.Lock()
 	h, ok := g.cnames[name]
 	g.lock.Unlock()
+	if !ok {
+		return Invalid, ok
+	}
 	return h, ok
+}
+
+// GetCounterDot returns a counter group and handle, given a dot separated
+// subgroup and counter list.
+// E.g.: "foo.bar.counter1"
+// It returns the counter group, and counter handle on success.
+// If not found it will return
+// nil, invalid handle, position of the first not found part if no group
+// could be found and
+// grp, invalid handle , position of not found part if the subgroups could be
+// found but the counter does not exists.
+// Error check:  g, c, pos := counters.RootGrpGetCounterDot(name)
+//               if g == nil || c == counters.Invalid  {
+//                      ERROR("in %s after %s\n", name, name[:pos])
+//               }
+func (g *Group) GetCounterDot(name string) (*Group, Handle, int) {
+	s := name
+	last := strings.LastIndexByte(s, '.')
+	if last < 0 {
+		// no dot => the whole name is the counter
+		ret, _ := g.GetCounter(name)
+		return g, ret, 0
+	}
+	subg, errpos := g.GetSubGroupDot(s[:last])
+	if subg == nil {
+		return nil, Invalid, errpos
+	}
+	ret, _ := subg.GetCounter(name[last+1:])
+	return subg, ret, last + 1
 }
 
 // GetSubGroup returns a subgroup, based on a subgroup name.
@@ -524,6 +556,35 @@ func (g *Group) GetSubGroup(gname string) *Group {
 	subgr := g.subg[gname]
 	g.lock.Unlock()
 	return subgr
+}
+
+// GetSubGroupDot returns a subgroup, based on a dot separated subgroup names
+// string.
+// If no subgroup with the corresponding name exists it will
+// return nil and the start index in string of the first non-existing subgroup.
+//
+// E.g.: GetSubGroupDot("foo.bar") will look for the subgroup "foo" and
+// if found it will return the subgroup "bar" in  "foo".
+func (g *Group) GetSubGroupDot(gnames string) (*Group, int) {
+	s := gnames
+	start := 0
+	pos := strings.IndexByte(s, '.')
+	subg := g
+	for pos >= 0 {
+		subg = subg.GetSubGroup(s[:pos])
+		if subg == nil {
+			return nil, start
+		}
+		if (pos + 1) >= len(s) {
+			// handle ending in dot, e.g. "foo.bar." => equiv to "foo.bar"
+			return subg, start
+		}
+		s = s[pos+1:]
+		start += pos + 1
+		pos = strings.IndexByte(s, '.')
+	}
+	// no more dots
+	return subg.GetSubGroup(s), start
 }
 
 // GetGroup is obsolete and will be removed in future versions,
