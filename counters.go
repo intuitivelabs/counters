@@ -314,6 +314,12 @@ func (g *Group) CntNo() int {
 	return int(g.no)
 }
 
+// MaxCntNo returns the maximum numbers of counters that can be used
+// in the group (can be greater then CntNo).
+func (g *Group) MaxCntNo() int {
+	return int(len(g.counters))
+}
+
 // Add adds a value to a counter. The counter is specified by its handle.
 //
 // It returns the new counter value (after the addition).
@@ -616,38 +622,181 @@ func (g *Group) GetSubGroups(groups *[]*Group) {
 	g.lock.Unlock()
 }
 
-// CopyCnts will copy all the counter from a src group into the current group.
+// copyCnts will copy all the counter from a src group into the current group.
 // Note that all the current group subgroups will be removed.
-func (g *Group) CopyCnts(src *Group) {
+func (g *Group) copyCnts(src *Group) {
+	g.lock.Lock()
 	g.no = int32(copy(g.counters, src.counters[:src.no]))
-	g.cnames = src.cnames
-	g.subg = nil
+	if len(g.cnames) == 0 {
+		g.cnames = make(map[string]Handle, g.MaxCntNo())
+	}
+	if &g.lock != &src.lock {
+		src.lock.Lock()
+	}
+	for k, v := range src.cnames {
+		g.cnames[k] = v
+	}
+	if &g.lock != &src.lock {
+		src.lock.Unlock()
+	}
+	g.lock.Unlock()
 }
 
-/*
-// AvgGrp fills all the counters in the group with the average values of the
-// corresponding counters in src: (g-src) / units.
+// CopyGrp will copy all the counters from the src Group to dst.
+// If rec is true it will recursively copy the subgroups too (reusing existing
+// subgroups with the same name in dst or creating  new destination subgroups
+// if no corresponding one is found or there is not
+// enough space for all the counters).
+// If rec is false the subgroups will be cleared.
 //
-// Note: the groups must have the same counters.
-func (g *Group) AvgGrp(src *Group, units int64) {
-	if src.no < g.no {
-		g.no = src.no
+// Returns 0 on success, -1 if the master group could not be copied or
+// the number of subgroups for each the copy failed.
+func CopyGrp(dst, src *Group, rec bool) int {
+	if dst.MaxCntNo() < src.CntNo() {
+		// failed, not enough pre-alloc counters in dst
+		return -1
 	}
-	if units == 0 {
-		return
-	}
-	for i := 0; i < int(g.no); i++ {
-		// FIXME: src/units
-		g.Sub(Handle(i), Val(int64(src.Get(Handle(i)))/units))
-		if g.GetFlags(Handle(i))&CntMaxF != 0 {
-			atomicUint64Max(&g.counters[i].max.v, uint64(src.GetMax(Handle(i))))
+	dst.copyCnts(src)
+	err := 0
+	if rec {
+		// recursively copy the subgroups
+		subgroups := make([]*Group, src.GetSubGroupsNo())
+		src.GetSubGroups(&subgroups)
+		for _, sg := range subgroups {
+			if sg == nil {
+				continue
+			}
+			var c *Group
+			if dsg := dst.GetSubGroup(sg.Name); (dsg != nil) &&
+				dsg.MaxCntNo() >= sg.CntNo() {
+				// existing subgroup, copy inside it
+				c = dsg
+			} else {
+				// subgroup does not exist in dst, or it does not have
+				// enough space for all the counters => create new one
+				c = &Group{}
+				c.Init(sg.Name, dst, sg.MaxCntNo())
+				dst.AddSubGroup(c)
+			}
+			if CopyGrp(c, sg, rec) != 0 {
+				err++
+			}
 		}
-		if g.GetFlags(Handle(i))&CntMinF != 0 {
-			atomicUint64Min(&g.counters[i].max.v, uint64(src.GetMin(Handle(i))))
+	} else {
+		dst.lock.Lock()
+		dst.subg = nil
+		dst.lock.Unlock()
+	}
+	return err
+}
+
+// ResetGrp will set all the counters to v. If rec is true it will
+// reset also all the subgroups.
+func ResetGrp(dst *Group, v Val, rec bool) {
+	for i := Handle(0); i < Handle(dst.no); i++ {
+		dst.Reset(i, v)
+	}
+	if rec {
+		// recursively reset the subgroups
+		subgroups := make([]*Group, dst.GetSubGroupsNo())
+		dst.GetSubGroups(&subgroups)
+		for _, sg := range subgroups {
+			if sg == nil {
+				continue
+			}
+			ResetGrp(sg, v, rec)
 		}
 	}
 }
-*/
+
+// FillRate will fill/overwrite the counters in the dst group with the
+// difference of the counters from a & b divided by the provided number of
+// units (dst = (a-b)/units).
+// If rec is true, the subgroups will be filled too with the corresponding
+// rate (non existing or too small subgroups in dst will be created).
+// All the groups must have the same number of counters or the function will
+// fail.
+//
+// Returns 0 on success, -1 if the master group could not be copied or
+// the number of subgroups for each the operation failed
+// (non-matching counters).
+func FillRate(dst, a, b *Group, units float64, rec bool) int {
+	if (a.CntNo() != b.CntNo()) || (dst.MaxCntNo() < a.CntNo()) {
+		return -1
+	}
+	dst.no = int32(a.CntNo())
+	for i := Handle(0); i < Handle(dst.no); i++ {
+		v := uint64(a.Get(i) - b.Get(i))
+		if units != 0 {
+			v = uint64(float64(v) / units)
+		}
+		dst.counters[i] = a.counters[i]
+		dst.counters[i].v.v = v
+		// max & min : use max(a,b) and min(a,b)
+		if dst.GetFlags(i)&CntMaxF != 0 {
+			atomicUint64Max(&dst.counters[i].max.v, uint64(b.GetMax(i)))
+		}
+		if dst.GetFlags(Handle(i))&CntMinF != 0 {
+			atomicUint64Min(&dst.counters[i].max.v, uint64(b.GetMin(i)))
+		}
+	}
+	dst.lock.Lock()
+	if len(dst.cnames) == 0 {
+		dst.cnames = make(map[string]Handle, dst.MaxCntNo())
+	}
+	if &dst.lock != &a.lock {
+		a.lock.Lock()
+	}
+	//  copy dst.cnames = a.cnames
+	for k, v := range a.cnames {
+		dst.cnames[k] = v
+	}
+	if &dst.lock != &a.lock {
+		a.lock.Unlock()
+	}
+	dst.lock.Unlock()
+	err := 0
+	if rec {
+		// recursively copy the subgroups
+		subgroups := make([]*Group, a.GetSubGroupsNo())
+		a.GetSubGroups(&subgroups)
+		for _, s1 := range subgroups {
+			if s1 == nil {
+				continue
+			}
+			s2 := b.GetSubGroup(s1.Name)
+			if s2 == nil {
+				err++
+				continue
+			}
+			if s1.CntNo() != s2.CntNo() {
+				// mismatched counters numbers, skip
+				err++
+				continue
+			}
+			var c *Group
+			if dsg := dst.GetSubGroup(s1.Name); (dsg != nil) &&
+				dsg.MaxCntNo() >= s1.CntNo() {
+				// existing large enough subgroup, re-use it
+				c = dsg
+			} else {
+				// subgroup does not exist in dst, or it does not have
+				// enough space for all the counters => create new one
+				c = &Group{}
+				c.Init(s1.Name, dst, s1.MaxCntNo())
+				dst.AddSubGroup(c)
+			}
+			if FillRate(c, s1, s2, units, rec) != 0 {
+				err++
+			}
+		}
+	} else {
+		dst.lock.Lock()
+		dst.subg = nil
+		dst.lock.Unlock()
+	}
+	return err
+}
 
 // PrintCounter prints one counter according to the passed flags.
 // It will print the contents of ident at the start and the
