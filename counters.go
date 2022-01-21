@@ -51,12 +51,12 @@ type Val uint64
 // CbkF is the type for the callback function called to
 // transform a counter value, when reading it.
 //
-// The parameters are the counter handle, the value to be transformed
-// and an opaque parameter, set when the callback is registered.
+// The parameters are the group handle, the counter handle, the value to be
+// transformed and an opaque parameter, set when the callback is registered.
 //
 // It returns the transformed value, which will be returned by the counter
 // read or get function.
-type CbkF func(h Handle, v Val, p interface{}) Val
+type CbkF func(g *Group, h Handle, v Val, p interface{}) Val
 
 // Def is the structure for registering a counter.
 type Def struct {
@@ -458,7 +458,7 @@ func (g *Group) Dec(h Handle) Val {
 func (g *Group) Get(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].v.v)
 	if g.counters[h].cbk != nil {
-		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
+		return g.counters[h].cbk(g, h, Val(v), g.counters[h].cbp)
 	}
 	return Val(v)
 }
@@ -471,7 +471,7 @@ func (g *Group) Get(h Handle) Val {
 func (g *Group) GetMax(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].max.v)
 	if g.counters[h].cbk != nil {
-		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
+		return g.counters[h].cbk(g, h, Val(v), g.counters[h].cbp)
 	}
 	return Val(v)
 }
@@ -484,7 +484,7 @@ func (g *Group) GetMax(h Handle) Val {
 func (g *Group) GetMin(h Handle) Val {
 	v := atomic.LoadUint64(&g.counters[h].min.v)
 	if g.counters[h].cbk != nil {
-		return g.counters[h].cbk(h, Val(v), g.counters[h].cbp)
+		return g.counters[h].cbk(g, h, Val(v), g.counters[h].cbp)
 	}
 	return Val(v)
 }
