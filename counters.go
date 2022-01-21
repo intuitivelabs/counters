@@ -43,6 +43,8 @@ const (
 	CntMaxF
 	// The counter value should be hidden (not printed).
 	CntHideVal
+	// The whole counter should be hidden
+	CntHideAllF
 )
 
 // Val is the type for the counter value.
@@ -804,6 +806,9 @@ func FillRate(dst, a, b *Group, units float64, rec bool) int {
 // PrFullName is set, the full counter name will be printed.
 func (g *Group) PrintCounter(w io.Writer, h Handle,
 	ident, prefix string, flags int) {
+	if g.GetFlags(h)&CntHideAllF != 0 {
+		return
+	}
 	n := g.GetName(h)
 	if len(n) > 0 {
 		if flags&PrFullName != 0 && prefix == "" {
