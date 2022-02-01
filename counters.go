@@ -45,6 +45,10 @@ const (
 	CntHideVal
 	// The whole counter should be hidden
 	CntHideAllF
+	// Hide value if 0
+	CntHideZeroF
+	// The counter is not monotonic, no rate should be computed
+	CntNonMonoF
 )
 
 // Val is the type for the counter value.
@@ -127,6 +131,8 @@ const (
 	PrDesc
 	// Print recursively all subgroups.
 	PrRec
+	// Print only non zero values
+	PrHideZero
 )
 
 // RootGrp contains all the groups defined without a parent group (nil).
@@ -728,12 +734,22 @@ func FillRate(dst, a, b *Group, units float64, rec bool) int {
 	}
 	dst.no = int32(a.CntNo())
 	for i := Handle(0); i < Handle(dst.no); i++ {
+		if (a.GetFlags(i)|b.GetFlags(i))&(CntHideAllF|CntNonMonoF) != 0 {
+			// skip over hidden counters
+			continue
+		}
 		v := uint64(a.Get(i) - b.Get(i))
 		if units != 0 {
 			v = uint64(float64(v) / units)
 		}
 		dst.counters[i] = a.counters[i]
+		// clear call read callbacks
+		// (since we compute the rate using them, we don't need them again
+		//  to transform the result)
+		dst.counters[i].cbk = nil
+		dst.counters[i].cbp = nil
 		dst.counters[i].v.v = v
+		dst.counters[i].flags |= b.GetFlags(i)
 		// max & min : use max(a,b) and min(a,b)
 		if dst.GetFlags(i)&CntMaxF != 0 {
 			atomicUint64Max(&dst.counters[i].max.v, uint64(b.GetMax(i)))
@@ -806,9 +822,22 @@ func FillRate(dst, a, b *Group, units float64, rec bool) int {
 // PrFullName is set, the full counter name will be printed.
 func (g *Group) PrintCounter(w io.Writer, h Handle,
 	ident, prefix string, flags int) {
-	if g.GetFlags(h)&CntHideAllF != 0 {
+	var v Val
+	cntF := g.GetFlags(h)
+	if cntF&CntHideAllF != 0 {
 		return
 	}
+	// skip if hidden if zero flag set
+	if (flags&PrHideZero != 0) || (cntF&CntHideZeroF != 0) {
+		v = g.Get(h)
+		if v == 0 {
+			return
+		}
+	} else if cntF&CntHideVal == 0 {
+		// get counter value only if needed (not hidden)
+		v = g.Get(h)
+	}
+
 	n := g.GetName(h)
 	if len(n) > 0 {
 		if flags&PrFullName != 0 && prefix == "" {
@@ -817,12 +846,12 @@ func (g *Group) PrintCounter(w io.Writer, h Handle,
 		fmt.Fprintf(w, "%s%-30s", ident, prefix+n)
 		if flags&PrVal != 0 {
 			fmt.Fprintf(w, ": ")
-			if g.GetFlags(h)&CntHideVal == 0 {
-				fmt.Fprintf(w, "%6d", g.Get(h))
+			if cntF&CntHideVal == 0 {
+				fmt.Fprintf(w, "%6d", v)
 			} else {
 				fmt.Fprintf(w, "      ")
 			}
-			if g.GetFlags(h)&CntMinF != 0 {
+			if cntF&CntMinF != 0 {
 				m := g.GetMin(h)
 				if m == Val(^uint64(0)) {
 					m = 0
@@ -831,7 +860,7 @@ func (g *Group) PrintCounter(w io.Writer, h Handle,
 			} else {
 				fmt.Fprintf(w, "       ")
 			}
-			if g.GetFlags(h)&CntMaxF != 0 {
+			if cntF&CntMaxF != 0 {
 				fmt.Fprintf(w, " M: %6d", g.GetMax(h))
 			} else {
 				fmt.Fprintf(w, "       ")
