@@ -119,6 +119,7 @@ type Group struct {
 	cnames   map[string]Handle
 	subg     map[string]*Group
 	lock     sync.Mutex
+	ExpVar   bool // publish expvar version if true
 }
 
 // Print flags used by the Group.Print function.
@@ -139,6 +140,7 @@ const (
 var RootGrp Group
 
 func init() {
+	RootGrp.ExpVar = true // publish counters as expvars by default
 }
 
 // NewGroup creates a new counter group, with a specified name and parent.
@@ -185,6 +187,10 @@ func (g *Group) Init(Name string, parent *Group, n int) *Group {
 	g.parent = parent
 	if parent != nil {
 		parent.AddSubGroup(g)
+	}
+	// if export to expvar not set, inherit it from parent
+	if parent != nil && !g.ExpVar {
+		g.ExpVar = parent.ExpVar
 	}
 	return g
 }
@@ -233,7 +239,9 @@ func (g *Group) RegisterDef(d *Def) (Handle, bool) {
 		// min needs to be set to some high value
 		g.Reset(Handle(i), 0)
 	}
-	expvar.Publish(name, &g.counters[i].v)
+	if g.ExpVar {
+		expvar.Publish(name, &g.counters[i].v)
+	}
 	if d.H != nil {
 		*d.H = Handle(i)
 	}
