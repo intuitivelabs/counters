@@ -744,6 +744,7 @@ func FillRate(dst, a, b *Group, units float64, rec bool) int {
 	for i := Handle(0); i < Handle(dst.no); i++ {
 		if (a.GetFlags(i)|b.GetFlags(i))&(CntHideAllF|CntNonMonoF) != 0 {
 			// skip over hidden counters
+			dst.counters[i].flags = CntHideAllF
 			continue
 		}
 		v := uint64(a.Get(i) - b.Get(i))
